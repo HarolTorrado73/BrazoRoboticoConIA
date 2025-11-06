@@ -33,117 +33,107 @@ class ControladorWeb:
         self.velocidad = 2  # Velocidad más lenta para mejor precisión
         log.info("Controlador web inicializado")
 
-    def movimiento_suave(self, articulación, ángulo_objetivo, pasos=10):
-        """Movimiento suave interpolado"""
+    def movimiento_suave_tiempo(self, articulación, tiempo_segundos, direccion, pasos=10):
+        """Movimiento suave basado en tiempo"""
         try:
-            ángulo_actual = self.angulos_actuales[articulación]
-            tamaño_paso = (ángulo_objetivo - ángulo_actual) / pasos
+            tiempo_paso = tiempo_segundos / pasos
 
             for paso in range(pasos):
-                ángulo_intermedio = int(ángulo_actual + (tamaño_paso * (paso + 1)))
-
                 if articulación == 'base':
-                    self.controlador_robot.mover_base(ángulo_intermedio, velocidad=self.velocidad)
+                    self.controlador_robot.mover_base_tiempo(direccion, tiempo_paso, velocidad=self.velocidad)
                 elif articulación == 'shoulder':
-                    self.controlador_robot.mover_hombro(ángulo_intermedio, velocidad=self.velocidad)
+                    self.controlador_robot.mover_hombro_tiempo(direccion, tiempo_paso, velocidad=self.velocidad)
                 elif articulación == 'elbow':
-                    self.controlador_robot.mover_codo(ángulo_intermedio, velocidad=self.velocidad)
+                    self.controlador_robot.mover_codo_tiempo(direccion, tiempo_paso, velocidad=self.velocidad)
                 elif articulación == 'gripper':
-                    self.controlador_robot.mover_pinza(ángulo_intermedio, velocidad=self.velocidad)
+                    self.controlador_robot.mover_pinza_tiempo(direccion, tiempo_paso, velocidad=self.velocidad)
 
                 time.sleep(self.retardo_movimiento / pasos)
 
-            self.angulos_actuales[articulación] = ángulo_objetivo
-            return True, f"{articulación.title()} movido suavemente a {ángulo_objetivo}°"
+            return True, f"{articulación.title()} movido suavemente {tiempo_segundos:.1f}s en dirección {direccion}"
 
         except Exception as e:
             return False, f"Error en movimiento suave {articulación}: {e}"
 
-    def mover_articulación(self, articulación, ángulo):
-        """Mover articulación específica con validación"""
+    def mover_articulación_tiempo(self, articulación, tiempo_segundos, direccion):
+        """Mover articulación específica por tiempo con validación"""
         try:
-            ángulo = int(ángulo)
+            tiempo_segundos = float(tiempo_segundos)
+            direccion = int(direccion)
 
-            # Validar rangos para servos continuos
-            límites_articulación = {
-                'base': (0, 360),      # 180° = parar, <180° = giro horario, >180° = giro antihorario
-                'shoulder': (0, 360),  # Control de velocidad
-                'elbow': (0, 360),     # Control de velocidad
-                'gripper': (0, 360)    # Control de velocidad
-            }
+            # Validar parámetros
+            if not (0.1 <= tiempo_segundos <= 5.0):
+                return False, f"Tiempo debe estar entre 0.1-5.0 segundos"
 
-            ángulo_min, ángulo_max = límites_articulación[articulación]
-            if not (ángulo_min <= ángulo <= ángulo_max):
-                return False, f"Ángulo de {articulación.title()} debe estar entre {ángulo_min}-{ángulo_max}°"
+            if direccion not in [-1, 1]:
+                return False, f"Dirección debe ser -1 o 1"
 
-            # Usar movimiento suave para cambios grandes
-            ángulo_actual = self.angulos_actuales[articulación]
-            diferencia_ángulo = abs(ángulo - ángulo_actual)
-
-            if diferencia_ángulo > 30:  # Movimiento grande, usar interpolación
-                return self.movimiento_suave(articulación, ángulo, pasos=min(diferencia_ángulo // 5, 20))
+            # Ejecutar movimiento con límites físicos
+            if articulación == 'base':
+                tiempo_real = self.controlador_robot.mover_base_tiempo(direccion, tiempo_segundos, velocidad=self.velocidad)
+            elif articulación == 'shoulder':
+                tiempo_real = self.controlador_robot.mover_hombro_tiempo(direccion, tiempo_segundos, velocidad=self.velocidad)
+            elif articulación == 'elbow':
+                tiempo_real = self.controlador_robot.mover_codo_tiempo(direccion, tiempo_segundos, velocidad=self.velocidad)
+            elif articulación == 'gripper':
+                tiempo_real = self.controlador_robot.mover_pinza_tiempo(direccion, tiempo_segundos, velocidad=self.velocidad)
             else:
-                # Movimiento directo para cambios pequeños
-                if articulación == 'base':
-                    self.controlador_robot.mover_base(ángulo, velocidad=self.velocidad)
-                elif articulación == 'shoulder':
-                    self.controlador_robot.mover_hombro(ángulo, velocidad=self.velocidad)
-                elif articulación == 'elbow':
-                    self.controlador_robot.mover_codo(ángulo, velocidad=self.velocidad)
-                elif articulación == 'gripper':
-                    self.controlador_robot.mover_pinza(ángulo, velocidad=self.velocidad)
+                return False, f"Articulación {articulación} no válida"
 
-                time.sleep(self.retardo_movimiento)
-                self.angulos_actuales[articulación] = ángulo
-                return True, f"{articulación.title()} movido a {ángulo}°"
+            time.sleep(self.retardo_movimiento)
+
+            direction_name = "positiva" if direccion == 1 else "negativa"
+            return True, f"{articulación.title()} movido {tiempo_real:.1f}s en dirección {direction_name}"
 
         except Exception as e:
             return False, f"Error moviendo {articulación}: {e}"
 
     def ir_a_home(self):
-        """Mover a posición home suavemente"""
+        """Mover a posición home usando movimientos temporizados"""
         try:
-            posiciones_home = [
-                ('base', 180),
-                ('shoulder', 45),
-                ('elbow', 90),
-                ('gripper', 0)
+            # Movimientos para regresar a posición home (aproximada)
+            movimientos_home = [
+                ('base', 1.5, -1),     # Ajuste base izquierda
+                ('shoulder', 1.0, -1), # Ajuste hombro abajo
+                ('elbow', 1.5, 1),     # Ajuste codo extender
+                ('gripper', 0.5, 1)    # Abrir pinza
             ]
 
-            for articulación, ángulo in posiciones_home:
-                éxito, mensaje = self.movimiento_suave(articulación, ángulo, pasos=15)
+            for articulación, tiempo, direccion in movimientos_home:
+                éxito, mensaje = self.movimiento_suave_tiempo(articulación, tiempo, direccion, pasos=15)
                 if not éxito:
                     return False, mensaje
                 time.sleep(0.3)
 
-            self.angulos_actuales = {'base': 180, 'shoulder': 45, 'elbow': 90, 'gripper': 0}
+            # Resetear contadores de tiempo
+            self.controlador_robot.resetear_tiempos()
             return True, "Movido suavemente a posición home"
         except Exception as e:
             return False, f"Error yendo a home: {e}"
 
     def secuencia_prueba(self):
-        """Ejecutar secuencia de prueba suave"""
+        """Ejecutar secuencia de prueba con movimientos temporizados"""
         try:
-            posiciones_prueba = [
-                ('base', 90),
-                ('shoulder', 60),
-                ('elbow', 120),
-                ('gripper', 90),
-                ('base', 270),
-                ('shoulder', 30),
-                ('elbow', 60),
-                ('gripper', 45)
+            movimientos_prueba = [
+                ('base', 0.5, 1),      # Base derecha
+                ('shoulder', 0.3, 1),  # Hombro arriba
+                ('elbow', 0.4, 1),     # Codo extender
+                ('gripper', 0.3, -1),  # Pinza cerrar
+                ('base', 0.5, -1),     # Base izquierda
+                ('shoulder', 0.3, -1), # Hombro abajo
+                ('elbow', 0.4, -1),    # Codo contraer
+                ('gripper', 0.3, 1)    # Pinza abrir
             ]
 
-            for articulación, ángulo in posiciones_prueba:
-                éxito, mensaje = self.movimiento_suave(articulación, ángulo, pasos=20)
+            for articulación, tiempo, direccion in movimientos_prueba:
+                éxito, mensaje = self.movimiento_suave_tiempo(articulación, tiempo, direccion, pasos=20)
                 if not éxito:
                     return False, mensaje
                 time.sleep(0.5)
 
             # Regresar a home
             self.ir_a_home()
-            return True, "Secuencia de prueba suave completada"
+            return True, "Secuencia de prueba con tiempo completada"
         except Exception as e:
             return False, f"Prueba fallida: {e}"
 
@@ -341,57 +331,57 @@ HTML_TEMPLATE = """
         <div class="controls">
             <!-- Base Control -->
             <div class="joint-control">
-                <h3>🔄 Base (Velocidad)</h3>
-                <div class="slider-container">
-                    <input type="range" min="0" max="360" value="180" class="slider" id="base-slider">
-                </div>
-                <div class="angle-display" id="base-angle">STOP</div>
-                <div class="buttons">
-                    <button class="btn btn-primary" onclick="setAngle('base', 90)">← Izq</button>
-                    <button class="btn btn-primary" onclick="setAngle('base', 180)">STOP</button>
-                    <button class="btn btn-primary" onclick="setAngle('base', 270)">Der →</button>
-                </div>
+                <h3>🔄 Base (Tiempo)</h3>
+                    <div class="slider-container">
+                        <input type="range" min="0.1" max="5.0" step="0.1" value="0.5" class="slider" id="base-time-slider">
+                    </div>
+                    <div class="angle-display" id="base-time-display">0.5s</div>
+                    <div class="buttons">
+                        <button class="btn btn-primary" onclick="moveJoint('base', parseFloat(document.getElementById('base-time-slider').value), -1)">← Izq</button>
+                        <button class="btn btn-primary" onclick="moveJoint('base', parseFloat(document.getElementById('base-time-slider').value), 0)">STOP</button>
+                        <button class="btn btn-primary" onclick="moveJoint('base', parseFloat(document.getElementById('base-time-slider').value), 1)">Der →</button>
+                    </div>
             </div>
 
             <!-- Shoulder Control -->
             <div class="joint-control">
-                <h3>💪 Hombro (Velocidad)</h3>
+                <h3>💪 Hombro (Tiempo)</h3>
                 <div class="slider-container">
-                    <input type="range" min="0" max="360" value="180" class="slider" id="shoulder-slider">
+                    <input type="range" min="0.1" max="5.0" step="0.1" value="0.5" class="slider" id="shoulder-time-slider">
                 </div>
-                <div class="angle-display" id="shoulder-angle">STOP</div>
+                <div class="angle-display" id="shoulder-time-display">0.5s</div>
                 <div class="buttons">
-                    <button class="btn btn-primary" onclick="setAngle('shoulder', 90)">↑ Subir</button>
-                    <button class="btn btn-primary" onclick="setAngle('shoulder', 180)">STOP</button>
-                    <button class="btn btn-primary" onclick="setAngle('shoulder', 270)">↓ Bajar</button>
+                    <button class="btn btn-primary" onclick="moveJoint('shoulder', parseFloat(document.getElementById('shoulder-time-slider').value), 1)">↑ Subir</button>
+                    <button class="btn btn-primary" onclick="moveJoint('shoulder', parseFloat(document.getElementById('shoulder-time-slider').value), 0)">STOP</button>
+                    <button class="btn btn-primary" onclick="moveJoint('shoulder', parseFloat(document.getElementById('shoulder-time-slider').value), -1)">↓ Bajar</button>
                 </div>
             </div>
 
             <!-- Elbow Control -->
             <div class="joint-control">
-                <h3>🦾 Codo (Velocidad)</h3>
+                <h3>🦾 Codo (Tiempo)</h3>
                 <div class="slider-container">
-                    <input type="range" min="0" max="360" value="180" class="slider" id="elbow-slider">
+                    <input type="range" min="0.1" max="5.0" step="0.1" value="0.5" class="slider" id="elbow-time-slider">
                 </div>
-                <div class="angle-display" id="elbow-angle">STOP</div>
+                <div class="angle-display" id="elbow-time-display">0.5s</div>
                 <div class="buttons">
-                    <button class="btn btn-primary" onclick="setAngle('elbow', 90)">↑ Extender</button>
-                    <button class="btn btn-primary" onclick="setAngle('elbow', 180)">STOP</button>
-                    <button class="btn btn-primary" onclick="setAngle('elbow', 270)">↓ Contraer</button>
+                    <button class="btn btn-primary" onclick="moveJoint('elbow', parseFloat(document.getElementById('elbow-time-slider').value), 1)">↑ Extender</button>
+                    <button class="btn btn-primary" onclick="moveJoint('elbow', parseFloat(document.getElementById('elbow-time-slider').value), 0)">STOP</button>
+                    <button class="btn btn-primary" onclick="moveJoint('elbow', parseFloat(document.getElementById('elbow-time-slider').value), -1)">↓ Contraer</button>
                 </div>
             </div>
 
             <!-- Gripper Control -->
             <div class="joint-control">
-                <h3>✋ Pinza (Velocidad)</h3>
+                <h3>✋ Pinza (Tiempo)</h3>
                 <div class="slider-container">
-                    <input type="range" min="0" max="360" value="180" class="slider" id="gripper-slider">
+                    <input type="range" min="0.1" max="5.0" step="0.1" value="0.5" class="slider" id="gripper-time-slider">
                 </div>
-                <div class="angle-display" id="gripper-angle">STOP</div>
+                <div class="angle-display" id="gripper-time-display">0.5s</div>
                 <div class="buttons">
-                    <button class="btn btn-success" onclick="setAngle('gripper', 90)">Abrir</button>
-                    <button class="btn btn-primary" onclick="setAngle('gripper', 180)">STOP</button>
-                    <button class="btn btn-warning" onclick="setAngle('gripper', 270)">Cerrar</button>
+                    <button class="btn btn-success" onclick="moveJoint('gripper', parseFloat(document.getElementById('gripper-time-slider').value), 1)">Abrir</button>
+                    <button class="btn btn-primary" onclick="moveJoint('gripper', parseFloat(document.getElementById('gripper-time-slider').value), 0)">STOP</button>
+                    <button class="btn btn-warning" onclick="moveJoint('gripper', parseFloat(document.getElementById('gripper-time-slider').value), -1)">Cerrar</button>
                 </div>
             </div>
         </div>
@@ -433,23 +423,23 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Current Angles Display -->
+        <!-- Current Times Display -->
         <div class="current-angles">
             <div class="angle-box">
                 <h4>Base</h4>
-                <div class="value" id="current-base">{{ angles.base }}°</div>
+                <div class="value" id="current-base">0.0s</div>
             </div>
             <div class="angle-box">
                 <h4>Hombro</h4>
-                <div class="value" id="current-shoulder">{{ angles.shoulder }}°</div>
+                <div class="value" id="current-shoulder">0.0s</div>
             </div>
             <div class="angle-box">
                 <h4>Codo</h4>
-                <div class="value" id="current-elbow">{{ angles.elbow }}°</div>
+                <div class="value" id="current-elbow">0.0s</div>
             </div>
             <div class="angle-box">
                 <h4>Pinza</h4>
-                <div class="value" id="current-gripper">{{ angles.gripper }}°</div>
+                <div class="value" id="current-gripper">0.0s</div>
             </div>
         </div>
 
@@ -458,152 +448,118 @@ HTML_TEMPLATE = """
     </div>
 
     <script>
-        // Update angle displays in real-time for continuous servos
-        function updateSpeedDisplay(sliderId, displayId) {
+        // Update time displays in real-time for each joint
+        function updateTimeDisplay(sliderId, displayId) {
             const slider = document.getElementById(sliderId);
             const display = document.getElementById(displayId);
 
             slider.addEventListener('input', function() {
-                const value = parseInt(this.value);
-                if (value < 120) {
-                    display.textContent = '← Rápido';
-                } else if (value < 150) {
-                    display.textContent = '← Medio';
-                } else if (value < 210) {
-                    display.textContent = 'STOP';
-                } else if (value < 240) {
-                    display.textContent = '→ Medio';
-                } else {
-                    display.textContent = '→ Rápido';
-                }
+                display.textContent = parseFloat(this.value).toFixed(1) + 's';
             });
         }
 
-        updateSpeedDisplay('base-slider', 'base-angle');
-        updateSpeedDisplay('shoulder-slider', 'shoulder-angle');
-        updateSpeedDisplay('elbow-slider', 'elbow-angle');
-        updateSpeedDisplay('gripper-slider', 'gripper-angle');
+        updateTimeDisplay('base-time-slider', 'base-time-display');
+        updateTimeDisplay('shoulder-time-slider', 'shoulder-time-display');
+        updateTimeDisplay('elbow-time-slider', 'elbow-time-display');
+        updateTimeDisplay('gripper-time-slider', 'gripper-time-display');
 
-        // Move on slider release (not during drag)
-        document.getElementById('base-slider').addEventListener('change', function() {
-            setAngle('base', this.value);
+        // Move on slider release (not during drag) - default positive direction
+        document.getElementById('base-time-slider').addEventListener('change', function() {
+            moveJoint('base', parseFloat(this.value), 1);
         });
-        document.getElementById('shoulder-slider').addEventListener('change', function() {
-            setAngle('shoulder', this.value);
+        document.getElementById('shoulder-time-slider').addEventListener('change', function() {
+            moveJoint('shoulder', parseFloat(this.value), 1);
         });
-        document.getElementById('elbow-slider').addEventListener('change', function() {
-            setAngle('elbow', this.value);
+        document.getElementById('elbow-time-slider').addEventListener('change', function() {
+            moveJoint('elbow', parseFloat(this.value), 1);
         });
-        document.getElementById('gripper-slider').addEventListener('change', function() {
-            setAngle('gripper', this.value);
+        document.getElementById('gripper-time-slider').addEventListener('change', function() {
+            moveJoint('gripper', parseFloat(this.value), 1);
         });
 
-        function setAngle(joint, angle) {
-            // Update display immediately for smooth UX
-            updateAngleDisplay(joint, angle);
+        // Generic joint mover: sends time (seconds) and direction (-1, 0, 1)
+        let lastMoveTime = 0;
+        const MOVE_COOLDOWN = 100; // ms
+
+        function moveJoint(joint, timeSeconds, direction) {
+            const now = Date.now();
+            if (now - lastMoveTime < MOVE_COOLDOWN) return;
+            lastMoveTime = now;
+
+            // If direction is 0, perform emergency stop (stop all)
+            if (direction === 0) {
+                fetch('/emergency_stop', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    showStatus('warning', data.message);
+                    if (data.times) updateCurrentTimes(data.times);
+                })
+                .catch(err => showStatus('error', 'Error de conexión: ' + err));
+                return;
+            }
+
+            // Update display immediately for UX
+            const displayEl = document.getElementById(joint + '-time-display');
+            if (displayEl) displayEl.textContent = parseFloat(timeSeconds).toFixed(1) + 's';
 
             fetch('/move', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ joint: joint, angle: angle })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ joint: joint, time: timeSeconds, direction: direction })
             })
             .then(response => response.json())
             .then(data => {
                 showStatus(data.success ? 'success' : 'error', data.message);
-                if (data.success) {
-                    // Only update server values after successful move
+                if (data.success && data.times) {
                     window.updatingFromServer = true;
-                    updateCurrentAngles(data.angles);
+                    updateCurrentTimes(data.times);
                     window.updatingFromServer = false;
-                } else {
+                } else if (!data.success) {
                     // Revert on error
-                    fetch('/angles')
-                    .then(response => response.json())
-                    .then(currentAngles => {
-                        window.updatingFromServer = true;
-                        updateCurrentAngles(currentAngles);
-                        window.updatingFromServer = false;
-                    });
+                    fetch('/times')
+                    .then(r => r.json())
+                    .then(currentTimes => updateCurrentTimes(currentTimes));
                 }
             })
             .catch(error => {
                 showStatus('error', 'Error de conexión: ' + error);
-                // Revert on error
-                fetch('/angles')
-                .then(response => response.json())
-                .then(currentAngles => {
-                    window.updatingFromServer = true;
-                    updateCurrentAngles(currentAngles);
-                    window.updatingFromServer = false;
-                });
+                fetch('/times')
+                .then(r => r.json())
+                .then(currentTimes => updateCurrentTimes(currentTimes));
             });
-        }
-
-        function updateAngleDisplay(joint, angle) {
-            // Update the display immediately when slider moves
-            const displayId = joint + '-angle';
-            const displayElement = document.getElementById(displayId);
-            if (displayElement) {
-                displayElement.textContent = angle + '°';
-            }
         }
 
         function goHome() {
-            fetch('/home', {
-                method: 'POST'
-            })
+            fetch('/home', { method: 'POST' })
             .then(response => response.json())
             .then(data => {
                 showStatus(data.success ? 'success' : 'error', data.message);
-                if (data.success) {
-                    updateCurrentAngles(data.angles);
-                }
+                if (data.success && data.times) updateCurrentTimes(data.times);
             })
-            .catch(error => {
-                showStatus('error', 'Error de conexión: ' + error);
-            });
+            .catch(error => showStatus('error', 'Error de conexión: ' + error));
         }
 
         function testSequence() {
-            fetch('/test', {
-                method: 'POST'
-            })
+            fetch('/test', { method: 'POST' })
             .then(response => response.json())
             .then(data => {
                 showStatus(data.success ? 'success' : 'error', data.message);
-                if (data.success) {
-                    updateCurrentAngles(data.angles);
-                }
+                if (data.success && data.times) updateCurrentTimes(data.times);
             })
-            .catch(error => {
-                showStatus('error', 'Error de conexión: ' + error);
-            });
+            .catch(error => showStatus('error', 'Error de conexión: ' + error));
         }
 
-        function updateCurrentAngles(angles) {
-            // Only update if we have valid angles
-            if (angles && typeof angles === 'object') {
-                document.getElementById('current-base').textContent = angles.base + '°';
-                document.getElementById('current-shoulder').textContent = angles.shoulder + '°';
-                document.getElementById('current-elbow').textContent = angles.elbow + '°';
-                document.getElementById('current-gripper').textContent = angles.gripper + '°';
+        function updateCurrentTimes(times) {
+            if (times && typeof times === 'object') {
+                document.getElementById('current-base').textContent = times.base.toFixed(1) + 's';
+                document.getElementById('current-shoulder').textContent = times.shoulder.toFixed(1) + 's';
+                document.getElementById('current-elbow').textContent = times.elbow.toFixed(1) + 's';
+                document.getElementById('current-gripper').textContent = times.gripper.toFixed(1) + 's';
 
-                // Update sliders ONLY when explicitly requested (not during drag)
-                // This prevents sliders from jumping around while user is adjusting
-                if (window.updatingFromServer) {
-                    document.getElementById('base-slider').value = angles.base;
-                    document.getElementById('shoulder-slider').value = angles.shoulder;
-                    document.getElementById('elbow-slider').value = angles.elbow;
-                    document.getElementById('gripper-slider').value = angles.gripper;
-
-                    // Update angle displays
-                    document.getElementById('base-angle').textContent = angles.base + '°';
-                    document.getElementById('shoulder-angle').textContent = angles.shoulder + '°';
-                    document.getElementById('elbow-angle').textContent = angles.elbow + '°';
-                    document.getElementById('gripper-angle').textContent = angles.gripper + '°';
-                }
+                document.getElementById('base-time-display').textContent = times.base.toFixed(1) + 's';
+                document.getElementById('shoulder-time-display').textContent = times.shoulder.toFixed(1) + 's';
+                document.getElementById('elbow-time-display').textContent = times.elbow.toFixed(1) + 's';
+                document.getElementById('gripper-time-display').textContent = times.gripper.toFixed(1) + 's';
             }
         }
 
@@ -612,118 +568,33 @@ HTML_TEMPLATE = """
             statusDiv.textContent = message;
             statusDiv.className = 'status ' + type;
             statusDiv.style.display = 'block';
-
-            // Hide after 3 seconds
-            setTimeout(() => {
-                statusDiv.style.display = 'none';
-            }, 3000);
+            setTimeout(() => { statusDiv.style.display = 'none'; }, 3000);
         }
 
-        // Initialize updating flag
         window.updatingFromServer = false;
 
-        // Auto-update sliders to current values (only once at startup)
+        // Auto-update times to current values (only once at startup)
         setTimeout(() => {
-            fetch('/angles')
+            fetch('/times')
             .then(response => response.json())
-            .then(data => {
-                window.updatingFromServer = true;
-                updateCurrentAngles(data);
-                window.updatingFromServer = false;
-            });
+            .then(data => { window.updatingFromServer = true; updateCurrentTimes(data); window.updatingFromServer = false; });
         }, 1000);
 
-        // Nuevas funciones para configuración
+        // Configuration endpoints
         function updateSpeed(speed) {
-            fetch('/config', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ setting: 'speed', value: parseInt(speed) })
-            })
-            .then(response => response.json())
-            .then(data => {
-                showStatus('success', 'Velocidad actualizada: ' + data.value);
-            });
+            fetch('/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ setting: 'speed', value: parseInt(speed) }) })
+            .then(response => response.json()).then(data => showStatus('success', 'Velocidad actualizada: ' + data.value));
         }
 
         function updateSmoothing(steps) {
-            fetch('/config', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ setting: 'smooth_steps', value: parseInt(steps) })
-            })
-            .then(response => response.json())
-            .then(data => {
-                showStatus('success', 'Suavizado actualizado: ' + data.value + ' pasos');
-            });
+            fetch('/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ setting: 'smooth_steps', value: parseInt(steps) }) })
+            .then(response => response.json()).then(data => showStatus('success', 'Suavizado actualizado: ' + data.value + ' pasos'));
         }
 
         function emergencyStop() {
-            fetch('/emergency_stop', {
-                method: 'POST'
-            })
+            fetch('/emergency_stop', { method: 'POST' })
             .then(response => response.json())
-            .then(data => {
-                showStatus('warning', data.message);
-                updateCurrentAngles(data.angles);
-            });
-        }
-
-        // Prevenir movimientos demasiado rápidos
-        let lastMoveTime = 0;
-        const MOVE_COOLDOWN = 100; // ms
-
-        function setAngle(joint, angle) {
-            const now = Date.now();
-            if (now - lastMoveTime < MOVE_COOLDOWN) {
-                return; // Ignorar movimientos demasiado frecuentes
-            }
-            lastMoveTime = now;
-
-            // Update display immediately for smooth UX
-            updateAngleDisplay(joint, angle);
-
-            fetch('/move', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ joint: joint, angle: angle })
-            })
-            .then(response => response.json())
-            .then(data => {
-                showStatus(data.success ? 'success' : 'error', data.message);
-                if (data.success) {
-                    // Only update server values after successful move
-                    window.updatingFromServer = true;
-                    updateCurrentAngles(data.angles);
-                    window.updatingFromServer = false;
-                } else {
-                    // Revert on error
-                    fetch('/angles')
-                    .then(response => response.json())
-                    .then(currentAngles => {
-                        window.updatingFromServer = true;
-                        updateCurrentAngles(currentAngles);
-                        window.updatingFromServer = false;
-                    });
-                }
-            })
-            .catch(error => {
-                showStatus('error', 'Error de conexión: ' + error);
-                // Revert on error
-                fetch('/angles')
-                .then(response => response.json())
-                .then(currentAngles => {
-                    window.updatingFromServer = true;
-                    updateCurrentAngles(currentAngles);
-                    window.updatingFromServer = false;
-                });
-            });
+            .then(data => { showStatus('warning', data.message); if (data.times) updateCurrentTimes(data.times); });
         }
     </script>
 </body>
@@ -732,20 +603,21 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
-    return render_template_string(HTML_TEMPLATE, angles=controlador.angulos_actuales)
+    return render_template_string(HTML_TEMPLATE, angles={'base': 0.0, 'shoulder': 0.0, 'elbow': 0.0, 'gripper': 0.0})
 
 @app.route('/move', methods=['POST'])
 def move():
     data = request.get_json()
     joint = data.get('joint')
-    angle = data.get('angle')
+    time_seconds = data.get('time', 0.5)  # Default 0.5 seconds
+    direction = data.get('direction', 1)  # Default positive direction
 
-    success, message = controlador.mover_articulación(joint, angle)
+    success, message = controlador.mover_articulación_tiempo(joint, time_seconds, direction)
 
     return jsonify({
         'success': success,
         'message': message,
-        'angles': controlador.angulos_actuales
+        'times': controlador.controlador_robot.obtener_estado_tiempos()
     })
 
 @app.route('/home', methods=['POST'])
@@ -754,7 +626,8 @@ def home():
     return jsonify({
         'success': success,
         'message': message,
-        'angles': controlador.angulos_actuales
+        'angles': controlador.angulos_actuales,
+        'times': controlador.controlador_robot.obtener_estado_tiempos()
     })
 
 @app.route('/test', methods=['POST'])
@@ -763,12 +636,13 @@ def test():
     return jsonify({
         'success': success,
         'message': message,
-        'angles': controlador.angulos_actuales
+        'angles': controlador.angulos_actuales,
+        'times': controlador.controlador_robot.obtener_estado_tiempos()
     })
 
-@app.route('/angles')
-def get_angles():
-    return jsonify(controlador.angulos_actuales)
+@app.route('/times')
+def get_times():
+    return jsonify(controlador.controlador_robot.obtener_estado_tiempos())
 
 @app.route('/config', methods=['POST'])
 def config():
@@ -789,17 +663,16 @@ def config():
 def emergency_stop():
     """Detener todos los movimientos inmediatamente"""
     try:
-        # Mover a posición segura
-        controlador.controlador_robot.mover_base(180, velocidad=1)
-        controlador.controlador_robot.mover_hombro(45, velocidad=1)
-        controlador.controlador_robot.mover_codo(90, velocidad=1)
-        controlador.controlador_robot.mover_pinza(0, velocidad=1)
+        # Detener todos los servos
+        controlador.controlador_robot.controlador_servo.detener_todos()
 
-        controlador.angulos_actuales = {'base': 180, 'shoulder': 45, 'elbow': 90, 'gripper': 0}
+        # Resetear contadores de tiempo
+        controlador.controlador_robot.resetear_tiempos()
+
         return jsonify({
             'success': True,
-            'message': 'Parada de emergencia ejecutada',
-            'angles': controlador.angulos_actuales
+            'message': 'Parada de emergencia ejecutada - todos los servos detenidos',
+            'times': controlador.controlador_robot.obtener_estado_tiempos()
         })
     except Exception as e:
         return jsonify({

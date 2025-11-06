@@ -17,12 +17,12 @@ log.basicConfig(level=log.INFO, format="%(asctime)s - %(levelname)s - %(message)
 class ManualController:
     def __init__(self):
         self.controlador_robot = ControladorRobotico()
-        # Estado actual de cada articulación
-        self.current_angles = {
-            'base': 180,      # Posición home
-            'shoulder': 45,   # Posición home
-            'elbow': 0,      # Posición home
-            'gripper': 0      # Abierta
+        # Estado actual de cada articulación (ahora basado en tiempo acumulado)
+        self.current_times = {
+            'base': 0.0,      # Tiempo acumulado base
+            'shoulder': 0.0,   # Tiempo acumulado hombro
+            'elbow': 0.0,      # Tiempo acumulado codo
+            'gripper': 0.0      # Tiempo acumulado pinza
         }
         # No necesitamos selección de articulaciones para calibración manual
         log.info("Manual Controller initialized")
@@ -32,25 +32,32 @@ class ManualController:
         print("\n" + "="*50)
         print("🤖 CONTROL MANUAL DEL BRAZO ROBÓTICO")
         print("="*50)
-        print("CALIBRACIÓN MANUAL - MUEVE TÚ EL BRAZO")
+        print("CONTROL POR TIEMPO - MOVIMIENTOS SEGUROS")
         print("\nINSTRUCCIONES:")
-        print("1. DESCONECTA la alimentación de los servos")
-        print("2. Mueve MANUALMENTE cada articulación del brazo")
-        print("3. Usa los comandos para REGISTRAR los ángulos")
-        print("\nComandos:")
-        print("  b<ángulo> - Registrar ángulo base (ej: b90)")
-        print("  s<ángulo> - Registrar ángulo hombro (ej: s45)")
-        print("  e<ángulo> - Registrar ángulo codo (ej: e90)")
-        print("  g<ángulo> - Registrar ángulo pinza (ej: g0)")
-        print("  r         - Mostrar ángulos registrados")
-        print("  c         - Limpiar todos los ángulos")
-        print("  q         - Salir")
+        print("1. CONECTA la alimentación de los servos")
+        print("2. Los movimientos están LIMITADOS por seguridad física")
+        print("3. Usa comandos de tiempo para mover articulaciones")
+        print("\nComandos de movimiento:")
+        print("  b+<seg> - Base derecha (ej: b+1.5)")
+        print("  b-<seg> - Base izquierda (ej: b-1.5)")
+        print("  s+<seg> - Hombro arriba (ej: s+1.0)")
+        print("  s-<seg> - Hombro abajo (ej: s-1.0)")
+        print("  e+<seg> - Codo extender (ej: e+2.0)")
+        print("  e-<seg> - Codo contraer (ej: e-2.0)")
+        print("  g+<seg> - Pinza abrir (ej: g+1.0)")
+        print("  g-<seg> - Pinza cerrar (ej: g-1.0)")
+        print("\nComandos de estado:")
+        print("  r       - Mostrar tiempos acumulados")
+        print("  c       - Resetear tiempos acumulados")
+        print("  home    - Ir a posición home")
+        print("  test    - Ejecutar secuencia de prueba")
+        print("  q       - Salir")
         print("\nEjemplo de uso:")
-        print("  Mueve base manualmente a 90° → escribe 'b90'")
-        print("  Mueve hombro a 45° → escribe 's45'")
-        print("  Presiona 'r' para ver todos los ángulos")
+        print("  Mover base a la derecha 1 segundo → 'b+1'")
+        print("  Subir hombro 0.5 segundos → 's+0.5'")
+        print("  Presiona 'r' para ver tiempos acumulados")
         print("="*50)
-        self.show_current_angles()
+        self.show_current_times()
 
         while True:
             try:
@@ -59,11 +66,15 @@ class ManualController:
                 if cmd == 'q':
                     break
                 elif cmd == 'r':
-                    self.show_current_angles()
+                    self.show_current_times()
                 elif cmd == 'c':
-                    self.clear_angles()
+                    self.clear_times()
+                elif cmd == 'home':
+                    self.go_home()
+                elif cmd == 'test':
+                    self.test_sequence()
                 elif cmd.startswith(('b', 's', 'e', 'g')):
-                    self.parse_command(cmd)
+                    self.parse_time_command(cmd)
                 else:
                     print("❌ Usa: b<ángulo>, s<ángulo>, e<ángulo>, g<ángulo>, r (mostrar), c (limpiar), q (salir)")
 
@@ -73,49 +84,60 @@ class ManualController:
             except Exception as e:
                 print(f"❌ Error: {e}")
 
-        self.show_current_angles()
+        self.show_current_times()
         self.cleanup()
 
-    def parse_command(self, cmd):
-        """Parse and execute manual command"""
+    def parse_time_command(self, cmd):
+        """Parse and execute time-based movement command"""
         try:
-            if cmd[0] in ['b', 's', 'e', 'g']:
-                # Servo control
-                joint_map = {
-                    'b': ('base', 'Base'),
-                    's': ('shoulder', 'Hombro'),
-                    'e': ('elbow', 'Codo'),
-                    'g': ('gripper', 'Pinza')
-                }
+            if len(cmd) < 3 or cmd[1] not in ['+', '-']:
+                print("❌ Formato inválido. Usa: b+1.5, s-0.5, e+2.0, g-1.0")
+                return
 
-                joint, display_name = joint_map[cmd[0]]
-                angle = int(cmd[1:])
+            joint_letter = cmd[0]
+            direction = 1 if cmd[1] == '+' else -1
+            time_str = cmd[2:]
 
-                # Todos los servos configurados para 360°
-                if not (0 <= angle <= 360):
-                    print(f"❌ El ángulo debe estar entre 0-360°")
-                    return
+            try:
+                tiempo_segundos = float(time_str)
+            except ValueError:
+                print("❌ Tiempo debe ser un número decimal. Ej: 1.5, 0.5, 2.0")
+                return
 
-                # SOLO registrar el ángulo - NO mover físicamente
-                self.current_angles[joint] = angle
-                print(f"✅ REGISTRADO: {display_name} en {angle}°")
+            # Validar límites de tiempo (máximo 5 segundos por movimiento)
+            if not (0.1 <= tiempo_segundos <= 5.0):
+                print("❌ El tiempo debe estar entre 0.1-5.0 segundos")
+                return
 
-            elif cmd.startswith('a'):
-                # Arm control
-                try:
-                    distance = int(cmd[1:])
-                except ValueError:
-                    print("❌ Formato de distancia inválido")
-                    return
+            # Mapear comandos a articulaciones
+            joint_map = {
+                'b': ('base', 'Base', self.controlador_robot.mover_base_tiempo),
+                's': ('shoulder', 'Hombro', self.controlador_robot.mover_hombro_tiempo),
+                'e': ('elbow', 'Codo', self.controlador_robot.mover_codo_tiempo),
+                'g': ('gripper', 'Pinza', self.controlador_robot.mover_pinza_tiempo)
+            }
 
-                direction = "ARRIBA" if distance > 0 else "ABAJO"
-                distance = abs(distance)
+            if joint_letter not in joint_map:
+                print("❌ Articulación inválida. Usa: b (base), s (hombro), e (codo), g (pinza)")
+                return
 
-                # SOLO registrar movimiento - NO mover físicamente
-                print(f"✅ REGISTRADO: Brazo {direction} {distance}mm")
+            joint, display_name, move_function = joint_map[joint_letter]
 
-        except ValueError:
-            print("❌ Formato de número inválido. Usa: b90, s45, a50, etc.")
+            # Ejecutar movimiento con límites físicos
+            tiempo_real = move_function(direction, tiempo_segundos, velocidad=1.0)
+
+            # Actualizar estado local
+            self.current_times[joint] += tiempo_real * direction
+
+            direction_name = {
+                'b': ("DERECHA" if direction == 1 else "IZQUIERDA"),
+                's': ("ARRIBA" if direction == 1 else "ABAJO"),
+                'e': ("EXTENDER" if direction == 1 else "CONTRAER"),
+                'g': ("ABRIR" if direction == 1 else "CERRAR")
+            }[joint_letter]
+
+            print(f"✅ MOVIMIENTO: {display_name} {direction_name} {tiempo_real:.1f}s")
+
         except Exception as e:
             print(f"❌ Error de movimiento: {e}")
 
@@ -164,87 +186,90 @@ class ManualController:
         self.selected_joint = self.joint_names[prev_index]
         print(f"🔄 Articulación seleccionada: {self.selected_joint}")
 
-    def show_current_angles(self):
-        """Show current angles of all joints"""
-        print("\n📊 ÁNGULOS REGISTRADOS:")
-        print(f"  Base:     {self.current_angles['base']}°")
-        print(f"  Hombro:   {self.current_angles['shoulder']}°")
-        print(f"  Codo:     {self.current_angles['elbow']}°")
-        print(f"  Pinza:    {self.current_angles['gripper']}°")
+    def show_current_times(self):
+        """Show current accumulated times of all joints"""
+        print("\n⏱️ TIEMPOS ACUMULADOS (segundos):")
+        print(f"  Base:     {self.current_times['base']:+.1f}s")
+        print(f"  Hombro:   {self.current_times['shoulder']:+.1f}s")
+        print(f"  Codo:     {self.current_times['elbow']:+.1f}s")
+        print(f"  Pinza:    {self.current_times['gripper']:+.1f}s")
+        print("\n💡 Valores positivos = movimiento en una dirección")
+        print("💡 Valores negativos = movimiento en dirección opuesta")
 
-    def clear_angles(self):
-        """Clear all registered angles"""
-        self.current_angles = {
-            'base': 0,
-            'shoulder': 0,
-            'elbow': 0,
-            'gripper': 0
+    def clear_times(self):
+        """Reset all accumulated times"""
+        self.current_times = {
+            'base': 0.0,
+            'shoulder': 0.0,
+            'elbow': 0.0,
+            'gripper': 0.0
         }
-        print("✅ Todos los ángulos limpiados")
+        self.controlador_robot.resetear_tiempos()
+        print("✅ Todos los tiempos reseteados")
 
     def go_home(self):
-        """Move all joints to home position"""
-        print("🏠 SIMULANDO posición home...")
+        """Move all joints to home position using time-based movements"""
+        print("🏠 Yendo a posición home...")
         try:
-            # Solo actualizar estado - no mover físicamente
-            self.current_angles = {
-                'base': 180,
-                'shoulder': 45,
-                'elbow': 90,
-                'gripper': 0
-            }
-            print("✅ SIMULADO: Posición home alcanzada")
-            self.show_current_angles()
+            # Movimientos para regresar a posición home (aproximada)
+            # Estos movimientos están limitados por seguridad física
+            self.controlador_robot.mover_base_tiempo(-1, 1.5, velocidad=1.0)   # Ajuste base
+            time.sleep(0.2)
+            self.controlador_robot.mover_hombro_tiempo(-1, 1.0, velocidad=1.0) # Ajuste hombro
+            time.sleep(0.2)
+            self.controlador_robot.mover_codo_tiempo(1, 1.5, velocidad=1.0)    # Ajuste codo
+            time.sleep(0.2)
+            self.controlador_robot.mover_pinza_tiempo(1, 0.5, velocidad=1.0)   # Abrir pinza
+
+            # Resetear contadores de tiempo
+            self.clear_times()
+            print("✅ Posición home alcanzada")
+            self.show_current_times()
         except Exception as e:
-            print(f"❌ Error en simulación: {e}")
+            print(f"❌ Error yendo a home: {e}")
 
     def test_sequence(self):
-        """Run a test sequence to verify all movements"""
-        print("🧪 Ejecutando secuencia de prueba...")
+        """Run a test sequence to verify all time-based movements"""
+        print("🧪 Ejecutando secuencia de prueba con movimientos temporizados...")
 
         try:
-            # Test base rotation (con servo 360°)
+            # Test base rotation
             print("Probando base...")
-            self.controlador_robot.mover_base(90, velocidad=2)
-            time.sleep(0.5)
-            self.controlador_robot.mover_base(270, velocidad=2)
-            time.sleep(0.5)
-            self.controlador_robot.mover_base(180, velocidad=2)  # Posición home
-            time.sleep(0.5)
+            self.controlador_robot.mover_base_tiempo(1, 0.5, velocidad=1.0)   # Derecha
+            time.sleep(0.3)
+            self.controlador_robot.mover_base_tiempo(-1, 0.5, velocidad=1.0)  # Izquierda
+            time.sleep(0.3)
 
             # Test shoulder
             print("Probando hombro...")
-            self.controlador_robot.mover_hombro(30, velocidad=2)  # Menos inclinado
-            time.sleep(0.5)
-            self.controlador_robot.mover_hombro(60, velocidad=2)
-            time.sleep(0.5)
-            self.controlador_robot.mover_hombro(45, velocidad=2)  # Posición home
-            time.sleep(0.5)
+            self.controlador_robot.mover_hombro_tiempo(1, 0.3, velocidad=1.0)  # Arriba
+            time.sleep(0.3)
+            self.controlador_robot.mover_hombro_tiempo(-1, 0.3, velocidad=1.0) # Abajo
+            time.sleep(0.3)
 
             # Test elbow
             print("Probando codo...")
-            self.controlador_robot.mover_codo(45, velocidad=2)
-            time.sleep(0.5)
-            self.controlador_robot.mover_codo(135, velocidad=2)
-            time.sleep(0.5)
-            self.controlador_robot.mover_codo(90, velocidad=2)
-            time.sleep(0.5)
+            self.controlador_robot.mover_codo_tiempo(1, 0.4, velocidad=1.0)   # Extender
+            time.sleep(0.3)
+            self.controlador_robot.mover_codo_tiempo(-1, 0.4, velocidad=1.0)  # Contraer
+            time.sleep(0.3)
 
             # Test gripper
             print("Probando pinza...")
-            self.controlador_robot.mover_pinza(90, velocidad=2)  # Cerrar
-            time.sleep(0.5)
-            self.controlador_robot.mover_pinza(0, velocidad=2)   # Abrir
-            time.sleep(0.5)
+            self.controlador_robot.mover_pinza_tiempo(-1, 0.3, velocidad=1.0) # Cerrar
+            time.sleep(0.3)
+            self.controlador_robot.mover_pinza_tiempo(1, 0.3, velocidad=1.0)  # Abrir
+            time.sleep(0.3)
 
-            # Test arm
-            print("Probando brazo...")
-            self.controlador_robot.mover_brazo(20, direccion=-1, velocidad=100)  # Abajo
-            time.sleep(0.5)
-            self.controlador_robot.mover_brazo(20, direccion=1, velocidad=100)   # Arriba
-            time.sleep(0.5)
+            # Test arm stepper
+            print("Probando brazo stepper...")
+            self.controlador_robot.mover_brazo(10, direccion=-1, velocidad=500)  # Abajo
+            time.sleep(0.3)
+            self.controlador_robot.mover_brazo(10, direccion=1, velocidad=500)   # Arriba
+            time.sleep(0.3)
 
             print("✅ Secuencia de prueba completada!")
+            self.show_current_times()
 
         except Exception as e:
             print(f"❌ Prueba fallida: {e}")

@@ -17,36 +17,41 @@ log.basicConfig(level=log.INFO, format="%(asctime)s - %(levelname)s - %(message)
 class CalibratedMover:
     def __init__(self):
         self.controlador_robot = ControladorRobotico()
-        # Ángulos calibrados - CAMBIA estos valores por los que calibraste
-        self.calibrated_angles = {
-            'base': 30,      # ← TU VALOR CALIBRADO AQUÍ
-            'shoulder': 45,  # ← TU VALOR CALIBRADO AQUÍ
-            'elbow': 90,     # ← TU VALOR CALIBRADO AQUÍ
-            'gripper': 0     # ← TU VALOR CALIBRADO AQUÍ
+        # Tiempos calibrados basados en movimientos temporizados
+        # Estos valores representan el tiempo necesario para alcanzar posiciones calibradas
+        self.calibrated_times = {
+            'base': {'derecha': 1.2, 'izquierda': 1.2},      # Tiempo para movimientos de base
+            'shoulder': {'arriba': 0.8, 'abajo': 0.8},       # Tiempo para movimientos de hombro
+            'elbow': {'extender': 1.5, 'contraer': 1.5},     # Tiempo para movimientos de codo
+            'gripper': {'abrir': 0.5, 'cerrar': 0.5}         # Tiempo para movimientos de pinza
         }
         log.info("Calibrated Mover initialized")
 
     def run(self):
         """Main calibrated movement interface"""
         print("\n" + "="*50)
-        print("🤖 MOVIMIENTO CON ÁNGULOS CALIBRADOS")
+        print("🤖 MOVIMIENTO CON TIEMPOS CALIBRADOS")
         print("="*50)
         print("INSTRUCCIONES:")
         print("1. Asegúrate de que la alimentación esté CONECTADA")
-        print("2. El brazo se moverá a las posiciones calibradas")
+        print("2. Los movimientos están LIMITADOS por seguridad física")
+        print("3. Usa tiempos calibrados para movimientos precisos")
         print("\nComandos:")
-        print("  b<ángulo> - Mover base (0-360°)")
-        print("  s<ángulo> - Mover hombro (0-360°)")
-        print("  e<ángulo> - Mover codo (0-360°)")
-        print("  g<ángulo> - Mover pinza (0-360°)")
-        print("  home      - Ir a posición calibrada")
-        print("  test      - Probar movimientos suaves")
-        print("  q         - Salir")
+        print("  b+<seg> - Base derecha (ej: b+1.2)")
+        print("  b-<seg> - Base izquierda (ej: b-1.2)")
+        print("  s+<seg> - Hombro arriba (ej: s+0.8)")
+        print("  s-<seg> - Hombro abajo (ej: s-0.8)")
+        print("  e+<seg> - Codo extender (ej: e+1.5)")
+        print("  e-<seg> - Codo contraer (ej: e-1.5)")
+        print("  g+<seg> - Pinza abrir (ej: g+0.5)")
+        print("  g-<seg> - Pinza cerrar (ej: g-0.5)")
+        print("  home     - Ir a posición calibrada")
+        print("  test     - Probar movimientos calibrados")
+        print("  q        - Salir")
         print("\nEjemplo de uso:")
-        print("  b90       - Base a 90°")
-        print("  s45       - Hombro a 45°")
-        print("  e120      - Codo a 120°")
-        print("  home      - Posición calibrada")
+        print("  b+1.2    - Base derecha 1.2 segundos")
+        print("  s+0.8    - Hombro arriba 0.8 segundos")
+        print("  home     - Posición calibrada completa")
         print("="*50)
 
         while True:
@@ -60,7 +65,7 @@ class CalibratedMover:
                 elif cmd == 'test':
                     self.test_movements()
                 elif cmd.startswith(('b', 's', 'e', 'g')):
-                    self.move_to_angle(cmd)
+                    self.move_with_time(cmd)
                 else:
                     print("❌ Usa: b<ángulo>, s<ángulo>, e<ángulo>, g<ángulo>, home, test, q")
 
@@ -72,85 +77,112 @@ class CalibratedMover:
 
         self.cleanup()
 
-    def move_to_angle(self, cmd):
-        """Move specific joint to angle"""
+    def move_with_time(self, cmd):
+        """Move specific joint with calibrated time"""
         try:
-            joint_map = {
-                'b': ('base', 'Base'),
-                's': ('shoulder', 'Hombro'),
-                'e': ('elbow', 'Codo'),
-                'g': ('gripper', 'Pinza')
-            }
-
-            joint, display_name = joint_map[cmd[0]]
-            angle = int(cmd[1:])
-
-            # Validar límites - todos los servos configurados para 360°
-            if not (0 <= angle <= 360):
-                print(f"❌ El ángulo debe estar entre 0-360°")
+            if len(cmd) < 3 or cmd[1] not in ['+', '-']:
+                print("❌ Formato inválido. Usa: b+1.2, s-0.8, e+1.5, g-0.5")
                 return
 
-            print(f"🔄 Moviendo {display_name} a {angle}°...")
+            joint_letter = cmd[0]
+            direction = 1 if cmd[1] == '+' else -1
+            time_str = cmd[2:]
 
-            if joint == 'base':
-                self.controlador_robot.mover_base(angle, velocidad=2)
-            elif joint == 'shoulder':
-                self.controlador_robot.mover_hombro(angle, velocidad=2)
-            elif joint == 'elbow':
-                self.controlador_robot.mover_codo(angle, velocidad=2)
-            elif joint == 'gripper':
-                self.controlador_robot.mover_pinza(angle, velocidad=2)
+            try:
+                tiempo_solicitado = float(time_str)
+            except ValueError:
+                print("❌ Tiempo debe ser un número decimal")
+                return
 
-            print(f"✅ {display_name} movido a {angle}°")
+            # Mapear comandos a articulaciones y tiempos calibrados
+            joint_map = {
+                'b': ('base', 'Base', self.controlador_robot.mover_base_tiempo,
+                      'derecha' if direction == 1 else 'izquierda'),
+                's': ('shoulder', 'Hombro', self.controlador_robot.mover_hombro_tiempo,
+                      'arriba' if direction == 1 else 'abajo'),
+                'e': ('elbow', 'Codo', self.controlador_robot.mover_codo_tiempo,
+                      'extender' if direction == 1 else 'contraer'),
+                'g': ('gripper', 'Pinza', self.controlador_robot.mover_pinza_tiempo,
+                      'abrir' if direction == 1 else 'cerrar')
+            }
 
-        except ValueError:
-            print("❌ Formato inválido. Usa: b90, s45, etc.")
+            if joint_letter not in joint_map:
+                print("❌ Articulación inválida. Usa: b (base), s (hombro), e (codo), g (pinza)")
+                return
+
+            joint, display_name, move_function, direction_name = joint_map[joint_letter]
+
+            # Usar tiempo calibrado si está disponible, sino el solicitado
+            tiempo_calibrado = self.calibrated_times[joint][direction_name]
+            tiempo_a_usar = min(tiempo_solicitado, tiempo_calibrado)
+
+            print(f"🔄 Moviendo {display_name} {direction_name} {tiempo_a_usar:.1f}s (calibrado: {tiempo_calibrado:.1f}s)...")
+
+            # Ejecutar movimiento
+            tiempo_real = move_function(direction, tiempo_a_usar, velocidad=1.0)
+
+            print(f"✅ {display_name} movido {direction_name} {tiempo_real:.1f}s")
+
         except Exception as e:
             print(f"❌ Error de movimiento: {e}")
 
     def go_to_calibrated_position(self):
-        """Move to calibrated home position"""
+        """Move to calibrated home position using time-based movements"""
         print("🏠 Yendo a posición calibrada...")
         try:
-            self.controlador_robot.mover_base(self.calibrated_angles['base'], velocidad=2)
+            # Secuencia de movimientos para alcanzar posición home calibrada
+            # Base: ajustar a posición central
+            self.controlador_robot.mover_base_tiempo(-1, self.calibrated_times['base']['izquierda'] * 0.5, velocidad=1.0)
             time.sleep(0.3)
-            self.controlador_robot.mover_hombro(self.calibrated_angles['shoulder'], velocidad=2)
+
+            # Hombro: posición media
+            self.controlador_robot.mover_hombro_tiempo(-1, self.calibrated_times['shoulder']['abajo'] * 0.3, velocidad=1.0)
             time.sleep(0.3)
-            self.controlador_robot.mover_codo(self.calibrated_angles['elbow'], velocidad=2)
+
+            # Codo: posición extendida media
+            self.controlador_robot.mover_codo_tiempo(1, self.calibrated_times['elbow']['extender'] * 0.4, velocidad=1.0)
             time.sleep(0.3)
-            self.controlador_robot.mover_pinza(self.calibrated_angles['gripper'], velocidad=2)
+
+            # Pinza: abierta
+            self.controlador_robot.mover_pinza_tiempo(1, self.calibrated_times['gripper']['abrir'], velocidad=1.0)
+
             print("✅ Posición calibrada alcanzada")
         except Exception as e:
             print(f"❌ Error yendo a posición calibrada: {e}")
 
     def test_movements(self):
-        """Test calibrated movements with small adjustments"""
-        print("🧪 Probando movimientos calibrados...")
+        """Test calibrated movements with time-based controls"""
+        print("🧪 Probando movimientos calibrados con tiempos...")
 
         try:
             # Test base
-            print("Base...")
-            current = self.calibrated_angles['base']
-            self.controlador_robot.mover_base(current + 10, velocidad=1)
+            print("Probando base...")
+            self.controlador_robot.mover_base_tiempo(1, 0.5, velocidad=1.0)   # Derecha
             time.sleep(0.3)
-            self.controlador_robot.mover_base(current, velocidad=1)
+            self.controlador_robot.mover_base_tiempo(-1, 0.5, velocidad=1.0)  # Izquierda
             time.sleep(0.3)
 
             # Test shoulder
-            print("Hombro...")
-            current = self.calibrated_angles['shoulder']
-            self.controlador_robot.mover_hombro(current + 5, velocidad=1)
+            print("Probando hombro...")
+            self.controlador_robot.mover_hombro_tiempo(1, 0.3, velocidad=1.0)  # Arriba
             time.sleep(0.3)
-            self.controlador_robot.mover_hombro(current, velocidad=1)
+            self.controlador_robot.mover_hombro_tiempo(-1, 0.3, velocidad=1.0) # Abajo
+            time.sleep(0.3)
+
+            # Test elbow
+            print("Probando codo...")
+            self.controlador_robot.mover_codo_tiempo(1, 0.4, velocidad=1.0)   # Extender
+            time.sleep(0.3)
+            self.controlador_robot.mover_codo_tiempo(-1, 0.4, velocidad=1.0)  # Contraer
             time.sleep(0.3)
 
             # Test gripper
-            print("Pinza...")
-            self.controlador_robot.mover_pinza(90, velocidad=1)
+            print("Probando pinza...")
+            self.controlador_robot.mover_pinza_tiempo(-1, 0.3, velocidad=1.0) # Cerrar
             time.sleep(0.3)
-            self.controlador_robot.mover_pinza(0, velocidad=1)
+            self.controlador_robot.mover_pinza_tiempo(1, 0.3, velocidad=1.0)  # Abrir
 
-            print("✅ Prueba completada")
+            print("✅ Prueba de movimientos calibrados completada")
 
         except Exception as e:
             print(f"❌ Error en prueba: {e}")
