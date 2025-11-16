@@ -20,19 +20,19 @@ print("Cargando modelo YOLO...")
 model = YOLO("perception/vision/detection/models/torch/yolo11n.pt")
 print("Modelo cargado.")
 
-# Inicializar controlador del brazo
+# Inicializar controlador del brazo (SIN motor paso a paso)
 print("Inicializando controlador del brazo...")
-robot = ControladorRobotico()
+robot = ControladorRobotico(habilitar_stepper=False)
 
 # Configuración
-WIDTH = 640
-HEIGHT = 480
-FPS = 30
+WIDTH = 1280  # ✅ MAYOR RESOLUCIÓN = Mayor campo de visión
+HEIGHT = 720  # ✅ Aspect ratio 16:9 para mejor visión periférica
+FPS = 15      # ✅ Reducido para mejor rendimiento (suficiente para detección)
 TARGET_CLASSES = ['bottle', 'cup', 'cell phone', 'book']
 CENTER_X = WIDTH // 2
 CENTER_Y = HEIGHT // 2
-DEAD_ZONE_X = 80  # Reducido para que detecte movimientos
-DEAD_ZONE_Y = 60  # Reducido para que detecte movimientos
+DEAD_ZONE_X = 100  # Zona muerta proporcional a nueva resolución
+DEAD_ZONE_Y = 50   # ✅ REDUCIDO para permitir acercarse más (antes: 80px)
 
 # Variables globales
 auto_movement_enabled = True  # ¡ACTIVADO AUTOMÁTICAMENTE AL INICIAR!
@@ -43,6 +43,9 @@ last_movement_time = 0
 MOVEMENT_COOLDOWN = 0.8  # Aumentado para movimientos más controlados
 detection_results = None  # Cache de detecciones
 results_lock = threading.Lock()
+object_centered_count = 0  # Contador de frames centrados
+CENTERED_THRESHOLD = 5  # Frames necesarios centrado para considerar "listo para agarrar"
+grab_in_progress = False  # Flag para evitar múltiples agarres
 
 def calculate_movement(obj_x, obj_y):
     """Calcular movimiento necesario"""
@@ -128,16 +131,16 @@ def capture_frames():
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
-        bufsize=10**8
+        bufsize=10**8  # Buffer grande para resolución 1280x720
     )
     
     jpeg_buffer = b''
     
-    print("Stream de cámara iniciado...")
+    print(f"Stream de cámara iniciado: {WIDTH}x{HEIGHT} @ {FPS}fps")
     
     try:
         while True:
-            chunk = process.stdout.read(4096)
+            chunk = process.stdout.read(8192)  # ✅ Buffer mayor para 720p (antes: 4096)
             if not chunk:
                 break
             
@@ -162,7 +165,7 @@ def capture_frames():
 
 def detection_thread():
     """Thread dedicado SOLO a detección YOLO"""
-    global detection_results, auto_movement_enabled
+    global detection_results, auto_movement_enabled, object_centered_count, grab_in_progress
     
     print("Thread de detección iniciado...")
     frame_count = 0
@@ -177,14 +180,14 @@ def detection_thread():
         
         frame_count += 1
         
-        # Detectar cada 3 frames para mejor rendimiento
-        if frame_count % 3 != 0:
-            time.sleep(0.03)
-            continue
+        # ✅ Detectar CADA FRAME (no saltear) - Pi 5 puede manejarlo con FPS reducido
+        # Antes: cada 3 frames → Ahora: cada frame
         
-        # DETECCIÓN YOLO
+        # DETECCIÓN YOLO - OPTIMIZADA
         start_time = time.time()
-        results = model(frame, conf=0.5, verbose=False, imgsz=640)
+        # ✅ imgsz=416 para MAYOR VELOCIDAD (en lugar de 640)
+        # Suficiente para detectar objetos grandes de cerca
+        results = model(frame, conf=0.45, verbose=False, imgsz=416)  # ✅ Confianza reducida + tamaño menor
         latency = (time.time() - start_time) * 1000
         
         boxes_obj = results[0].boxes
@@ -205,11 +208,19 @@ def detection_thread():
                 class_name = model.names[int(classes[i])]
                 conf = float(confs[i])
                 
+                # Calcular tamaño del objeto (para saber si está cerca)
+                box_width = x2 - x1
+                box_height = y2 - y1
+                box_area = box_width * box_height
+                
                 all_detections.append({
                     'box': (x1, y1, x2, y2),
                     'class': class_name,
                     'conf': conf,
-                    'is_target': class_name in TARGET_CLASSES
+                    'is_target': class_name in TARGET_CLASSES,
+                    'area': box_area,
+                    'width': box_width,
+                    'height': box_height
                 })
                 
                 if class_name in TARGET_CLASSES and conf > best_confidence:
@@ -229,25 +240,90 @@ def detection_thread():
             }
         
         # Mover si auto está activado
-        if best_detection and auto_movement_enabled and target_center_x:
+        if best_detection and auto_movement_enabled and target_center_x and not grab_in_progress:
             movement = calculate_movement(target_center_x, target_center_y)
             
             # DEBUG: Imprimir siempre lo que está detectando
             class_name = best_detection[0]
             error_x = target_center_x - CENTER_X
             error_y = target_center_y - CENTER_Y
+            
+            # Calcular si objeto está lo suficientemente cerca (por tamaño)
+            # Buscar el objeto detectado en all_detections para obtener su área
+            target_area = 0
+            for det in all_detections:
+                if det['class'] == class_name and det['is_target']:
+                    target_area = det['area']
+                    break
+            
+            # Objeto "cerca" si ocupa más del 8% de la pantalla (1280x720 = 921,600px)
+            total_pixels = WIDTH * HEIGHT
+            is_close = (target_area / total_pixels) > 0.08  # 8% de la pantalla
+            
             print(f"\n[DEBUG] Detectado: {class_name}")
             print(f"  Posición: ({target_center_x}, {target_center_y})")
             print(f"  Centro: ({CENTER_X}, {CENTER_Y})")
             print(f"  Error X: {error_x} (zona muerta: ±{DEAD_ZONE_X})")
             print(f"  Error Y: {error_y} (zona muerta: ±{DEAD_ZONE_Y})")
+            print(f"  Área objeto: {target_area}px² ({target_area/total_pixels*100:.1f}% pantalla)")
+            print(f"  ¿Está cerca?: {'SÍ ✓' if is_close else 'NO'}")
             print(f"  Movimiento calculado: {movement}")
             
             if movement:
+                # Resetear contador si se está moviendo
+                object_centered_count = 0
                 print(f"[AUTO] Target: {class_name} - MOVIENDO...")
                 move_to_object(movement)
             else:
-                print(f"[AUTO] Target: {class_name} CENTRADO ✓")
+                # Objeto centrado
+                if is_close:
+                    object_centered_count += 1
+                    print(f"[AUTO] Target: {class_name} CENTRADO ✓ [{object_centered_count}/{CENTERED_THRESHOLD}]")
+                    
+                    # Si está centrado y cerca por suficientes frames → AGARRAR
+                    if object_centered_count >= CENTERED_THRESHOLD:
+                        print("\n" + "="*60)
+                        print("🎯 OBJETO CENTRADO Y CERCA - INICIANDO SECUENCIA DE AGARRE")
+                        print("="*60)
+                        grab_in_progress = True
+                        try:
+                            # Secuencia de agarre
+                            print("  1. Extendiendo brazo...")
+                            robot.mover_codo_tiempo(1, 1.5, velocidad=0.5)
+                            time.sleep(0.5)
+                            
+                            print("  2. Abriendo pinza...")
+                            robot.accion_recoger()
+                            time.sleep(1.0)
+                            
+                            print("  3. Levantando...")
+                            robot.mover_hombro_tiempo(-1, 0.8, velocidad=0.4)
+                            time.sleep(0.5)
+                            
+                            print("  4. Cerrando pinza...")
+                            robot.accion_soltar()
+                            time.sleep(1.0)
+                            
+                            print("  5. Retrayendo...")
+                            robot.mover_hombro_tiempo(1, 1.0, velocidad=0.5)
+                            time.sleep(0.5)
+                            robot.mover_codo_tiempo(-1, 1.5, velocidad=0.5)
+                            
+                            print("✅ SECUENCIA COMPLETADA")
+                            print("="*60 + "\n")
+                            
+                            # Resetear y pausar auto por 5 segundos
+                            object_centered_count = 0
+                            time.sleep(5)
+                        finally:
+                            grab_in_progress = False
+                else:
+                    # Centrado pero NO cerca
+                    object_centered_count = 0
+                    print(f"[AUTO] Target: {class_name} CENTRADO pero LEJOS - esperando acercarse más...")
+        else:
+            # No hay detección o auto desactivado
+            object_centered_count = 0
         
         time.sleep(0.01)  # Small delay
 

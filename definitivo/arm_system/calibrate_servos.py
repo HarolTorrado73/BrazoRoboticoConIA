@@ -16,9 +16,9 @@ print("  A) Ajustar el trimmer físicamente (recomendado)")
 print("  B) Encontrar el pulso correcto por software")
 print("\n" + "="*60)
 
-servo_name = input("\n¿Qué servo calibrar? (hombro/codo/pinza): ").strip().lower()
+servo_name = input("\n¿Qué servo calibrar? (hombro/codo/muñeca/pinza): ").strip().lower()
 
-if servo_name not in ['hombro', 'codo', 'pinza']:
+if servo_name not in ['hombro', 'codo', 'muñeca', 'muneca', 'pinza']:
     print("Servo inválido")
     exit(1)
 
@@ -32,7 +32,9 @@ robot = ControladorRobotico()
 servo_map = {
     'hombro': 0,
     'codo': 1,
-    'pinza': 2
+    'muñeca': 2,
+    'muneca': 2,  # Aceptar sin tilde también
+    'pinza': 3
 }
 canal = servo_map[servo_name]
 

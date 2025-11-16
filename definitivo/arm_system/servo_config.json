@@ -1,0 +1,26 @@
+{
+  "shoulder": {
+    "canal": 0,
+    "pulso_neutral": 1700,
+    "evaluacion": 0,
+    "timestamp": "2025-11-16 hombro=canal0"
+  },
+  "elbow": {
+    "canal": 1,
+    "pulso_neutral": 1700,
+    "evaluacion": 0,
+    "timestamp": "2025-11-16 codo=canal1"
+  },
+  "wrist": {
+    "canal": 2,
+    "pulso_neutral": 1700,
+    "evaluacion": 0,
+    "timestamp": "2025-11-16 muñeca=canal2"
+  },
+  "gripper": {
+    "canal": 3,
+    "pulso_neutral": 1680,
+    "evaluacion": 0,
+    "timestamp": "2025-11-16 pinza=canal3"
+  }
+}

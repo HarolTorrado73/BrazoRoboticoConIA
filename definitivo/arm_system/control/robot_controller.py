@@ -4,6 +4,8 @@ import busio
 from adafruit_pca9685 import PCA9685
 from gpiozero import OutputDevice
 import logging as log
+import json
+import os
 
 class ControladorServo:
     """Controlador para servos continuos usando PCA9685 con movimientos temporizados"""
@@ -24,6 +26,10 @@ class ControladorServo:
         self.pca.frequency = frecuencia
         self.servos = {}
         
+        # Cargar pulsos neutrales calibrados desde servo_config.json
+        self.pulsos_neutrales = self._cargar_pulsos_neutrales()
+        log.info(f"Pulsos neutrales cargados: {self.pulsos_neutrales}")
+        
         # Diagnóstico y seguridad
         # Si es True, se aplicará un pequeño pulso de "hold" en lugar del pulso
         # neutral exacto cuando termine el movimiento.
@@ -34,6 +40,36 @@ class ControladorServo:
         # servos continuos en posicionales - es solo un pequeño bias/pulso.
         self.hold_pulse_offset = 100
 
+    def _cargar_pulsos_neutrales(self):
+        """Cargar pulsos neutrales calibrados desde servo_config.json"""
+        config_path = os.path.join(os.path.dirname(__file__), '..', 'servo_config.json')
+        
+        # Valores por defecto si no existe el archivo
+        default_pulsos = {
+            'hombro': 1700,
+            'codo': 1700,
+            'muñeca': 1700,
+            'pinza': 1680
+        }
+        
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    # Extraer solo los pulsos neutrales
+                    pulsos = {}
+                    for nombre, datos in config.items():
+                        pulsos[nombre] = datos.get('pulso_neutral', default_pulsos.get(nombre, 1500))
+                    log.info(f"✅ Pulsos neutrales cargados desde {config_path}")
+                    return pulsos
+            else:
+                log.warning(f"⚠️  No se encontró {config_path}, usando valores calibrados por defecto")
+                return default_pulsos
+        except Exception as e:
+            log.error(f"❌ Error cargando servo_config.json: {e}")
+            log.warning("Usando valores calibrados por defecto")
+            return default_pulsos
+
     def agregar_servo(self, nombre, canal, pulso_min=500, pulso_max=2500, angulo_min=0, angulo_max=180):
         """Agregar servo al controlador"""
         # Usar rango completo de pulso para servos MG996R
@@ -42,8 +78,10 @@ class ControladorServo:
             'pulso_min': pulso_min,
             'pulso_max': pulso_max,
             'angulo_min': angulo_min,
-            'angulo_max': angulo_max
+            'angulo_max': angulo_max,
+            'pulso_neutral': self.pulsos_neutrales.get(nombre, 1500)  # Pulso neutral personalizado
         }
+        log.info(f"Servo '{nombre}' agregado: canal={canal}, pulso_neutral={self.servos[nombre]['pulso_neutral']}µs")
 
     def mover_por_tiempo(self, nombre, direccion, tiempo_segundos, velocidad=0.5):
         """Mover servo continuo por tiempo específico en lugar de ángulos
@@ -59,56 +97,44 @@ class ControladorServo:
             return
 
         servo = self.servos[nombre]
+        pulso_neutral = servo['pulso_neutral']  # Usar pulso neutral calibrado
 
         # CONTROL DE SERVOS CONTINUOS - Control de velocidad por tiempo
         # direccion: -1 = giro horario, 0 = parar, 1 = giro antihorario
         if direccion == 0:
-            # Detener
-            pulso = 1500
+            # Detener - usar pulso neutral calibrado
+            pulso = pulso_neutral
         elif direccion == -1:
             # Giro horario (sentido horario)
-            pulso = 1500 + (500 * velocidad)  # 1500-2000us
+            pulso = pulso_neutral + (500 * velocidad)  # neutral+500us
         elif direccion == 1:
             # Giro antihorario (sentido antihorario)
-            pulso = 1500 - (500 * velocidad)  # 1500-1000us
+            pulso = pulso_neutral - (500 * velocidad)  # neutral-500us
         else:
             log.error(f"Dirección inválida: {direccion}")
             return
 
         ciclo_trabajo = int(pulso / 20000 * 0xFFFF)  # Periodo 50Hz
-        log.info(f"[Servo] {nombre}: inicio movimiento dir={direccion} tiempo={tiempo_segundos}s pulso={pulso}us canal={servo['canal']}")
+        log.info(f"[Servo] {nombre}: inicio movimiento dir={direccion} tiempo={tiempo_segundos}s pulso={pulso}us (neutral={pulso_neutral}us) canal={servo['canal']}")
         self.pca.channels[servo['canal']].duty_cycle = ciclo_trabajo
 
         # Mantener movimiento por el tiempo especificado
         time.sleep(tiempo_segundos)
 
-        # Al finalizar: aplicar stop o (opcionalmente) una pequeña pulse de "hold"
-        if self.hold_after_move:
-            # Elegir un pulso de hold cercano al neutral pero con pequeño offset
-            if pulso > 1500:
-                hold_pulso = 1500 + min(500, self.hold_pulse_offset)
-            elif pulso < 1500:
-                hold_pulso = 1500 - min(500, self.hold_pulse_offset)
-            else:
-                hold_pulso = 1500
-
-            ciclo_hold = int(hold_pulso / 20000 * 0xFFFF)
-            self.pca.channels[servo['canal']].duty_cycle = ciclo_hold
-            log.info(f"[Servo] {nombre}: aplicado pulso hold {hold_pulso}us (offset={self.hold_pulse_offset})")
-        else:
-            # Pulso neutro para detener
-            neutro = int(1500 / 20000 * 0xFFFF)
-            self.pca.channels[servo['canal']].duty_cycle = neutro
-            log.info(f"[Servo] {nombre}: detenido (pulso neutral aplicado)")
+        # SIEMPRE aplicar pulso neutral exacto al terminar
+        ciclo_neutral = int(pulso_neutral / 20000 * 0xFFFF)
+        self.pca.channels[servo['canal']].duty_cycle = ciclo_neutral
+        log.info(f"[Servo] {nombre}: detenido con pulso neutral {pulso_neutral}us")
 
     def detener_servo(self, nombre):
         """Detener servo específico"""
         if nombre in self.servos:
             servo = self.servos[nombre]
-            # Pulso neutro para detener
-            ciclo_trabajo = int(1500 / 20000 * 0xFFFF)
+            pulso_neutral = servo['pulso_neutral']  # Usar pulso neutral calibrado
+            # Pulso neutro calibrado para detener
+            ciclo_trabajo = int(pulso_neutral / 20000 * 0xFFFF)
             self.pca.channels[servo['canal']].duty_cycle = ciclo_trabajo
-            log.info(f"[Servo] {nombre}: detener_servo -> pulso neutral aplicado")
+            log.info(f"[Servo] {nombre}: detener_servo -> pulso neutral {pulso_neutral}us aplicado")
 
     def set_hold_after_move(self, enabled: bool, offset_us: int = None):
         """Habilitar/deshabilitar la aplicación de pequeño pulso de hold al terminar un movimiento.
@@ -170,18 +196,34 @@ class ControladorStepper:
 class ControladorRobotico:
     """Controlador principal del brazo robótico con movimientos temporizados y límites físicos"""
 
-    def __init__(self):
-        """Inicializar controlador del robot"""
+    def __init__(self, habilitar_stepper=True):
+        """Inicializar controlador del robot
+        
+        Args:
+            habilitar_stepper: Si es False, no inicializa el motor paso a paso (útil si no está conectado o da error)
+        """
         self.controlador_servo = ControladorServo()
-        # Configurar servos: base (canal 0), hombro (1), codo (2), pinza (3)
+        # Configurar servos: hombro (canal 0), codo (1), muñeca (2), pinza (3)
         # Todos los servos son continuos de 360°
-        self.controlador_servo.agregar_servo('base', 0, angulo_min=0, angulo_max=360)
-        self.controlador_servo.agregar_servo('shoulder', 1, angulo_min=0, angulo_max=360)
-        self.controlador_servo.agregar_servo('elbow', 2, angulo_min=0, angulo_max=360)
+        # NO hay servo "base" - el movimiento horizontal es con motor paso a paso
+        self.controlador_servo.agregar_servo('shoulder', 0, angulo_min=0, angulo_max=360)
+        self.controlador_servo.agregar_servo('elbow', 1, angulo_min=0, angulo_max=360)
+        self.controlador_servo.agregar_servo('wrist', 2, angulo_min=0, angulo_max=360)
         self.controlador_servo.agregar_servo('gripper', 3, angulo_min=0, angulo_max=360)
 
-        # Stepper para elevación del brazo: paso=17, dir=18, hab=19 (pines BCM)
-        self.controlador_stepper = ControladorStepper(pin_paso=17, pin_direccion=18, pin_habilitar=19)
+        # Motor paso a paso para movimiento HORIZONTAL (izquierda/derecha)
+        # TMC2208: STEP=GPIO14, DIR=GPIO15 (según tus conexiones reales)
+        # Solo inicializar si está habilitado
+        self.controlador_stepper = None
+        if habilitar_stepper:
+            try:
+                self.controlador_stepper = ControladorStepper(pin_paso=14, pin_direccion=15, pin_habilitar=None)
+                log.info("✅ Motor paso a paso inicializado (GPIO14=STEP, GPIO15=DIR)")
+            except Exception as e:
+                log.warning(f"⚠️  No se pudo inicializar motor paso a paso: {e}")
+                log.warning("   El brazo funcionará solo con servos (sin movimiento horizontal)")
+        else:
+            log.info("ℹ️  Motor paso a paso deshabilitado (solo servos)")
 
         # LÍMITES FÍSICOS DEL BRAZO (en segundos de movimiento)
         # Estos límites previenen que el brazo se salga de su rango físico
@@ -263,7 +305,16 @@ class ControladorRobotico:
         self.mover_pinza_tiempo(direccion, tiempo, velocidad)
 
     def mover_brazo(self, distancia_mm, direccion=1, velocidad=1000):
-        """Mover brazo stepper una distancia específica"""
+        """Mover brazo horizontalmente (izquierda/derecha) usando motor paso a paso
+        
+        Args:
+            distancia_mm: Distancia en milímetros a mover
+            direccion: 1 = derecha, -1 = izquierda
+            velocidad: Velocidad del motor (pasos por segundo)
+        """
+        if self.controlador_stepper is None:
+            log.warning("⚠️  Motor paso a paso no disponible - movimiento horizontal deshabilitado")
+            return
         self.controlador_stepper.mover_distancia(distancia_mm, direccion=direccion, velocidad=velocidad)
 
     def accion_recoger(self):
@@ -274,9 +325,14 @@ class ControladorRobotico:
         """Cerrar pinza para soltar"""
         self.mover_pinza_tiempo(-1, 1.0)  # Cerrar por 1 segundo
 
-    def accion_subir(self, distancia=50):
-        """Subir brazo stepper"""
-        self.mover_brazo(distancia, direccion=1)
+    def mover_horizontal(self, distancia=50, direccion=1):
+        """Mover brazo horizontalmente (izquierda/derecha) con motor paso a paso
+        
+        Args:
+            distancia: Distancia en mm (por defecto 50mm)
+            direccion: 1 = derecha, -1 = izquierda
+        """
+        self.mover_brazo(distancia, direccion=direccion)
 
     def resetear_tiempos(self):
         """Resetear contadores de tiempo acumulado"""
