@@ -41,47 +41,52 @@ class ControladorServo:
         self.hold_pulse_offset = 100
 
     def _cargar_pulsos_neutrales(self):
-        """Cargar pulsos neutrales calibrados desde servo_config.json"""
+        """Cargar pulsos neutrales y pulsos hold calibrados desde servo_config.json"""
         config_path = os.path.join(os.path.dirname(__file__), '..', 'servo_config.json')
         
         # Valores por defecto si no existe el archivo
-        default_pulsos = {
-            'hombro': 1700,
-            'codo': 1700,
-            'muñeca': 1700,
-            'pinza': 1680
+        default_config = {
+            'shoulder': {'pulso_neutral': 1700, 'pulso_hold': 1700},
+            'elbow': {'pulso_neutral': 1720, 'pulso_hold': 1850},
+            'wrist': {'pulso_neutral': 1682, 'pulso_hold': 1800},
+            'gripper': {'pulso_neutral': 1690, 'pulso_hold': 1690}
         }
         
         try:
             if os.path.exists(config_path):
                 with open(config_path, 'r') as f:
                     config = json.load(f)
-                    # Extraer solo los pulsos neutrales
+                    # Extraer pulsos neutrales y hold
                     pulsos = {}
                     for nombre, datos in config.items():
-                        pulsos[nombre] = datos.get('pulso_neutral', default_pulsos.get(nombre, 1500))
-                    log.info(f"✅ Pulsos neutrales cargados desde {config_path}")
+                        pulsos[nombre] = {
+                            'neutral': datos.get('pulso_neutral', default_config.get(nombre, {}).get('pulso_neutral', 1500)),
+                            'hold': datos.get('pulso_hold', datos.get('pulso_neutral', default_config.get(nombre, {}).get('pulso_hold', 1500)))
+                        }
+                    log.info(f"✅ Pulsos neutrales y hold cargados desde {config_path}")
                     return pulsos
             else:
                 log.warning(f"⚠️  No se encontró {config_path}, usando valores calibrados por defecto")
-                return default_pulsos
+                return {k: {'neutral': v['pulso_neutral'], 'hold': v['pulso_hold']} for k, v in default_config.items()}
         except Exception as e:
             log.error(f"❌ Error cargando servo_config.json: {e}")
             log.warning("Usando valores calibrados por defecto")
-            return default_pulsos
+            return {k: {'neutral': v['pulso_neutral'], 'hold': v['pulso_hold']} for k, v in default_config.items()}
 
     def agregar_servo(self, nombre, canal, pulso_min=500, pulso_max=2500, angulo_min=0, angulo_max=180):
         """Agregar servo al controlador"""
         # Usar rango completo de pulso para servos MG996R
+        config = self.pulsos_neutrales.get(nombre, {'neutral': 1500, 'hold': 1500})
         self.servos[nombre] = {
             'canal': canal,
             'pulso_min': pulso_min,
             'pulso_max': pulso_max,
             'angulo_min': angulo_min,
             'angulo_max': angulo_max,
-            'pulso_neutral': self.pulsos_neutrales.get(nombre, 1500)  # Pulso neutral personalizado
+            'pulso_neutral': config['neutral'],  # Pulso neutral personalizado
+            'pulso_hold': config['hold']  # Pulso hold para compensación de gravedad
         }
-        log.info(f"Servo '{nombre}' agregado: canal={canal}, pulso_neutral={self.servos[nombre]['pulso_neutral']}µs")
+        log.info(f"Servo '{nombre}' agregado: canal={canal}, pulso_neutral={self.servos[nombre]['pulso_neutral']}µs, pulso_hold={self.servos[nombre]['pulso_hold']}µs")
 
     def mover_por_tiempo(self, nombre, direccion, tiempo_segundos, velocidad=0.5):
         """Mover servo continuo por tiempo específico en lugar de ángulos
@@ -121,20 +126,21 @@ class ControladorServo:
         # Mantener movimiento por el tiempo especificado
         time.sleep(tiempo_segundos)
 
-        # SIEMPRE aplicar pulso neutral exacto al terminar
-        ciclo_neutral = int(pulso_neutral / 20000 * 0xFFFF)
-        self.pca.channels[servo['canal']].duty_cycle = ciclo_neutral
-        log.info(f"[Servo] {nombre}: detenido con pulso neutral {pulso_neutral}us")
+        # Usar PULSO_HOLD al terminar (compensa gravedad en codo y muñeca)
+        pulso_hold = servo['pulso_hold']
+        ciclo_hold = int(pulso_hold / 20000 * 0xFFFF)
+        self.pca.channels[servo['canal']].duty_cycle = ciclo_hold
+        log.info(f"[Servo] {nombre}: detenido con pulso hold {pulso_hold}us (neutral={pulso_neutral}us)")
 
     def detener_servo(self, nombre):
         """Detener servo específico"""
         if nombre in self.servos:
             servo = self.servos[nombre]
-            pulso_neutral = servo['pulso_neutral']  # Usar pulso neutral calibrado
-            # Pulso neutro calibrado para detener
-            ciclo_trabajo = int(pulso_neutral / 20000 * 0xFFFF)
+            pulso_hold = servo['pulso_hold']  # Usar pulso hold calibrado
+            # Pulso hold calibrado para detener (compensa gravedad)
+            ciclo_trabajo = int(pulso_hold / 20000 * 0xFFFF)
             self.pca.channels[servo['canal']].duty_cycle = ciclo_trabajo
-            log.info(f"[Servo] {nombre}: detener_servo -> pulso neutral {pulso_neutral}us aplicado")
+            log.info(f"[Servo] {nombre}: detener_servo -> pulso hold {pulso_hold}us aplicado")
 
     def set_hold_after_move(self, enabled: bool, offset_us: int = None):
         """Habilitar/deshabilitar la aplicación de pequeño pulso de hold al terminar un movimiento.
